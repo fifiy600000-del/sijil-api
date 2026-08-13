@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "bcryptjs": "^3.0.2"
+    "bcryptjs": "^3.0.3",
+    "worker-mailer": "^1.2.1"
   }
 }
