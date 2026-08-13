@@ -4,7 +4,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // REGISTER
     if (url.pathname === "/api/register") {
       if (request.method !== "POST") {
         return json({ success: false, message: "استخدم POST" }, 405);
@@ -51,7 +50,6 @@ export default {
       });
     }
 
-    // LOGIN
     if (url.pathname === "/api/login") {
       if (request.method !== "POST") {
         return json({ success: false, message: "استخدم POST" }, 405);
@@ -93,11 +91,15 @@ export default {
 
       const token = crypto.randomUUID();
 
+      const expiresAt = new Date(
+        Date.now() + 30 * 24 * 60 * 60 * 1000
+      ).toISOString();
+
       await env.DB
         .prepare(
-          "INSERT INTO sessions (id, user_id) VALUES (?, ?)"
+          "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)"
         )
-        .bind(token, user.id)
+        .bind(token, user.id, expiresAt)
         .run();
 
       return json({
