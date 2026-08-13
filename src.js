@@ -2,13 +2,14 @@ import bcrypt from "bcryptjs";
 import { WorkerMailer } from "worker-mailer";
 
 // ============ إعدادات عامة ============
-const CODE_TTL_MINUTES = 10;      // مدة صلاحية الرمز
+const CODE_TTL_MINUTES = 10;        // مدة صلاحية رمز تفعيل البريد
 const RESEND_COOLDOWN_SECONDS = 60; // مهلة بين كل إعادة إرسال
-const MAX_CODE_ATTEMPTS = 5;      // محاولات خاطئة قبل رفض الرمز
+const MAX_CODE_ATTEMPTS = 5;        // محاولات خاطئة قبل رفض الرمز
+
+const WORKER_CODE_TTL_MINUTES = 15; // مدة صلاحية كود دعوة العامل
 
 const FROM_NAME = "سجل";
 // عنوان Gmail المرسل وكلمة المرور يُقرآن من env (أسرار Cloudflare)
-// بدل كتابتهما هنا مباشرة - راجع تعليمات wrangler secret أسفل الملف
 
 export default {
   async fetch(request, env) {
@@ -42,7 +43,6 @@ export default {
       const now = new Date().toISOString();
 
       if (existing) {
-        // حساب موجود لكن غير مفعّل: نحدّثه برمز جديد بدل تكرار السجل
         await env.DB
           .prepare(
             `UPDATE users SET full_name = ?, password_hash = ?, verification_code = ?,
@@ -225,13 +225,165 @@ export default {
       });
     }
 
+    // ============ LOGOUT (يشتغل لتوكن المالك أو توكن العامل) ============
+    if (url.pathname === "/api/logout" && request.method === "POST") {
+      const token = getToken(request);
+      if (!token) return json({ success: false, message: "غير مسجل الدخول" }, 401);
+
+      // نحاول نحذفه من جلسات المالك، وإذا مو موجود نحذفه من جلسات العامل
+      const ownerDel = await env.DB
+        .prepare("DELETE FROM sessions WHERE token = ?")
+        .bind(token)
+        .run();
+
+      if (!ownerDel.meta || ownerDel.meta.changes === 0) {
+        await env.DB
+          .prepare("DELETE FROM worker_sessions WHERE token = ?")
+          .bind(token)
+          .run();
+      }
+
+      return json({ success: true, message: "تم تسجيل الخروج" });
+    }
+
+    // ============ إنشاء كود دعوة عامل (المالك فقط) ============
+    if (url.pathname === "/api/workers/generate" && request.method === "POST") {
+      const token = getToken(request);
+      if (!token) return json({ success: false, message: "غير مسجل الدخول" }, 401);
+
+      const access = await getAccess(env, token);
+      if (!access) return json({ success: false, message: "الجلسة غير صالحة أو منتهية" }, 401);
+
+      if (access.type !== "owner")
+        return json({ success: false, message: "العامل ما يقدر يضيف عمال جدد" }, 403);
+
+      const code = generateCode();
+      const expiresAt = new Date(Date.now() + WORKER_CODE_TTL_MINUTES * 60 * 1000).toISOString();
+      const id = crypto.randomUUID();
+
+      await env.DB
+        .prepare(
+          `INSERT INTO workers (id, owner_user_id, code, code_expires_at, status)
+           VALUES (?, ?, ?, ?, 'pending')`
+        )
+        .bind(id, access.owner_user_id, code, expiresAt)
+        .run();
+
+      return json({
+        success: true,
+        message: "شارك هذا الكود مع العامل، صالح لمدة 15 دقيقة",
+        code,
+        expires_at: expiresAt
+      });
+    }
+
+    // ============ انضمام العامل بالكود (بدون تسجيل دخول) ============
+    if (url.pathname === "/api/workers/join" && request.method === "POST") {
+      const data = await request.json();
+      const { code, name } = data;
+
+      if (!code)
+        return json({ success: false, message: "الكود مطلوب" }, 400);
+
+      const pending = await env.DB
+        .prepare(
+          `SELECT id, owner_user_id, code_expires_at, status
+           FROM workers WHERE code = ? AND status = 'pending'`
+        )
+        .bind(code)
+        .first();
+
+      if (!pending)
+        return json({ success: false, message: "الكود غير صحيح" }, 404);
+
+      if (new Date(pending.code_expires_at) < new Date())
+        return json({ success: false, message: "الكود منتهي الصلاحية، اطلب كودًا جديدًا" }, 410);
+
+      const now = new Date().toISOString();
+
+      await env.DB
+        .prepare(
+          `UPDATE workers SET status = 'active', name = ?, joined_at = ?,
+           code = NULL, code_expires_at = NULL WHERE id = ?`
+        )
+        .bind(name || "عامل", now, pending.id)
+        .run();
+
+      const token = crypto.randomUUID();
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+      await env.DB
+        .prepare(
+          "INSERT INTO worker_sessions (token, worker_id, owner_user_id, expires_at) VALUES (?, ?, ?, ?)"
+        )
+        .bind(token, pending.id, pending.owner_user_id, expiresAt)
+        .run();
+
+      return json({
+        success: true,
+        message: "تم الانضمام بنجاح",
+        token
+      });
+    }
+
+    // ============ قائمة العمال (المالك فقط) ============
+    if (url.pathname === "/api/workers" && request.method === "GET") {
+      const token = getToken(request);
+      if (!token) return json({ success: false, message: "غير مسجل الدخول" }, 401);
+
+      const access = await getAccess(env, token);
+      if (!access) return json({ success: false, message: "الجلسة غير صالحة أو منتهية" }, 401);
+
+      if (access.type !== "owner")
+        return json({ success: false, message: "غير مصرح" }, 403);
+
+      const result = await env.DB
+        .prepare(
+          `SELECT id, name, status, joined_at, created_at
+           FROM workers WHERE owner_user_id = ? AND status = 'active'
+           ORDER BY joined_at DESC`
+        )
+        .bind(access.owner_user_id)
+        .all();
+
+      return json({ success: true, workers: result.results });
+    }
+
+    // ============ حذف عامل (المالك فقط) ============
+    if (url.pathname.startsWith("/api/workers/") && request.method === "DELETE") {
+      const token = getToken(request);
+      if (!token) return json({ success: false, message: "غير مسجل الدخول" }, 401);
+
+      const access = await getAccess(env, token);
+      if (!access) return json({ success: false, message: "الجلسة غير صالحة أو منتهية" }, 401);
+
+      if (access.type !== "owner")
+        return json({ success: false, message: "غير مصرح" }, 403);
+
+      const workerId = url.pathname.replace("/api/workers/", "");
+
+      const worker = await env.DB
+        .prepare("SELECT id FROM workers WHERE id = ? AND owner_user_id = ?")
+        .bind(workerId, access.owner_user_id)
+        .first();
+
+      if (!worker)
+        return json({ success: false, message: "العامل غير موجود" }, 404);
+
+      // نحذف كل جلساته أول (يفقد الوصول فورًا) ثم نحذف سجله
+      await env.DB.prepare("DELETE FROM worker_sessions WHERE worker_id = ?").bind(workerId).run();
+      await env.DB.prepare("DELETE FROM workers WHERE id = ?").bind(workerId).run();
+
+      return json({ success: true, message: "تم حذف العامل، فقد الوصول للحساب" });
+    }
+
     // ============ CREATE NOTEBOOK ============
     if (url.pathname === "/api/notebooks" && request.method === "POST") {
       const token = getToken(request);
       if (!token) return json({ success: false, message: "غير مسجل الدخول" }, 401);
 
-      const user = await getUser(env, token);
-      if (!user) return json({ success: false, message: "الجلسة غير صالحة أو منتهية" }, 401);
+      const access = await getAccess(env, token);
+      if (!access) return json({ success: false, message: "الجلسة غير صالحة أو منتهية" }, 401);
 
       const data = await request.json();
       const title = data.title || "سجل جديد";
@@ -239,7 +391,7 @@ export default {
 
       await env.DB
         .prepare("INSERT INTO notebooks (id, user_id, title) VALUES (?, ?, ?)")
-        .bind(id, user.id, title)
+        .bind(id, access.owner_user_id, title)
         .run();
 
       return json({ success: true, message: "تم إنشاء السجل", notebook: { id, title } });
@@ -250,8 +402,8 @@ export default {
       const token = getToken(request);
       if (!token) return json({ success: false, message: "غير مسجل الدخول" }, 401);
 
-      const user = await getUser(env, token);
-      if (!user) return json({ success: false, message: "الجلسة غير صالحة أو منتهية" }, 401);
+      const access = await getAccess(env, token);
+      if (!access) return json({ success: false, message: "الجلسة غير صالحة أو منتهية" }, 401);
 
       const data = await request.json();
       const { notebook_id, name, amount = 0, quantity = 0, notes = "" } = data;
@@ -261,7 +413,7 @@ export default {
 
       const notebook = await env.DB
         .prepare("SELECT id FROM notebooks WHERE id = ? AND user_id = ?")
-        .bind(notebook_id, user.id)
+        .bind(notebook_id, access.owner_user_id)
         .first();
 
       if (!notebook)
@@ -297,15 +449,15 @@ export default {
 
       if (!token) return json({ success: false, message: "غير مسجل الدخول" }, 401);
 
-      const user = await getUser(env, token);
-      if (!user) return json({ success: false, message: "الجلسة غير صالحة أو منتهية" }, 401);
+      const access = await getAccess(env, token);
+      if (!access) return json({ success: false, message: "الجلسة غير صالحة أو منتهية" }, 401);
 
       if (!notebookId)
         return json({ success: false, message: "notebook_id مطلوب" }, 400);
 
       const notebook = await env.DB
         .prepare("SELECT id, title FROM notebooks WHERE id = ? AND user_id = ?")
-        .bind(notebookId, user.id)
+        .bind(notebookId, access.owner_user_id)
         .first();
 
       if (!notebook)
@@ -329,7 +481,6 @@ export default {
 // ============ أدوات مساعدة ============
 
 function generateCode() {
-  // رقم عشوائي آمن من 6 أرقام (يشمل الأصفار في البداية)
   const buf = new Uint32Array(1);
   crypto.getRandomValues(buf);
   const n = buf[0] % 1000000;
@@ -346,15 +497,42 @@ function getToken(request) {
   return null;
 }
 
-async function getUser(env, token) {
-  return await env.DB
+// يتحقق من التوكن سواء كان توكن مالك حقيقي أو توكن عامل،
+// وفي الحالتين يرجع owner_user_id اللي نتعامل به مع باقي الجداول (notebooks/rows)
+async function getAccess(env, token) {
+  const owner = await env.DB
     .prepare(
-      `SELECT users.id, users.email
+      `SELECT users.id as user_id, users.email
        FROM sessions JOIN users ON users.id = sessions.user_id
        WHERE sessions.token = ? AND sessions.expires_at > CURRENT_TIMESTAMP`
     )
     .bind(token)
     .first();
+
+  if (owner) {
+    return { type: "owner", owner_user_id: owner.user_id, email: owner.email };
+  }
+
+  const worker = await env.DB
+    .prepare(
+      `SELECT worker_sessions.worker_id, worker_sessions.owner_user_id, workers.name
+       FROM worker_sessions JOIN workers ON workers.id = worker_sessions.worker_id
+       WHERE worker_sessions.token = ? AND worker_sessions.expires_at > CURRENT_TIMESTAMP
+       AND workers.status = 'active'`
+    )
+    .bind(token)
+    .first();
+
+  if (worker) {
+    return {
+      type: "worker",
+      owner_user_id: worker.owner_user_id,
+      worker_id: worker.worker_id,
+      worker_name: worker.name
+    };
+  }
+
+  return null;
 }
 
 function json(data, status = 200) {
@@ -364,9 +542,6 @@ function json(data, status = 200) {
   });
 }
 
-// إرسال البريد عبر Gmail SMTP مباشرة من الـ Worker (worker-mailer يفتح
-// اتصال TCP مباشرة لسيرفر Gmail — بدون أي خدمة إرسال بريد خارجية،
-// فقط حساب Gmail عادي + كلمة مرور تطبيق App Password مجانية دائمًا)
 async function sendVerificationEmail(env, toEmail, fullName, code) {
   if (!env.GMAIL_USER || !env.GMAIL_PASS) {
     console.error("GMAIL_USER / GMAIL_PASS غير مضبوطة في أسرار الـ Worker");
@@ -377,7 +552,7 @@ async function sendVerificationEmail(env, toEmail, fullName, code) {
     const mailer = await WorkerMailer.connect({
       host: "smtp.gmail.com",
       port: 465,
-      secure: true, // implicit TLS، مطلوب مع بورت 465
+      secure: true,
       credentials: {
         username: env.GMAIL_USER,
         password: env.GMAIL_PASS
@@ -396,7 +571,6 @@ async function sendVerificationEmail(env, toEmail, fullName, code) {
         `إذا لم تطلب هذا الرمز، تجاهل هذه الرسالة.`
     });
   } catch (err) {
-    // لا نُفشل عملية التسجيل بسبب خطأ إرسال، لكن يُسجَّل للمراجعة
     console.error("email send failed:", err);
   }
 }
