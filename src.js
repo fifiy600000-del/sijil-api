@@ -1,9 +1,13 @@
 export default {
   async fetch(request, env) {
+    const result = await env.DB
+      .prepare("SELECT COUNT(*) AS count FROM users")
+      .first();
+
     return new Response(
       JSON.stringify({
         success: true,
-        message: "Sijil API يعمل"
+        users: result.count
       }),
       {
         headers: {
