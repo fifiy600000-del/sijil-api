@@ -1,0 +1,8 @@
+name = "sijil-api"
+main = "src.js"
+compatibility_date = "2026-08-13"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sijil-db"
+database_id = "66d98369-9e36-45bd-9153-d56609bbda14"
