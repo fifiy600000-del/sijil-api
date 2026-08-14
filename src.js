@@ -16,1219 +16,1245 @@ const FROM_NAME = "سجل";
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-
     // ========================================================
-    // REGISTER
+    // نلف كل شي بـ try/catch عام حتى ما يصير "لا استجابة"
+    // أي خطأ غير متوقع (قاعدة بيانات، كود، إلخ) يرجع الآن
+    // كرسالة JSON واضحة بدل ما يوقف السيرفر بصمت
     // ========================================================
+    try {
+      return await handleRequest(request, env);
+    } catch (err) {
+      console.error("UNCAUGHT WORKER ERROR:", err);
 
-    if (url.pathname === "/api/register") {
-      if (request.method !== "POST") {
-        return json(
-          { success: false, message: "استخدم POST" },
-          405
-        );
-      }
-
-      const data = await request.json();
-      const { full_name, email, password } = data;
-
-      if (!email || !password) {
-        return json(
-          {
-            success: false,
-            message: "email و password مطلوبان"
-          },
-          400
-        );
-      }
-
-      if (!isValidEmail(email)) {
-        return json(
-          {
-            success: false,
-            message: "صيغة البريد الإلكتروني غير صحيحة"
-          },
-          400
-        );
-      }
-
-      const existing = await env.DB
-        .prepare(
-          "SELECT id, verified FROM users WHERE email = ?"
-        )
-        .bind(email)
-        .first();
-
-      if (existing && existing.verified) {
-        return json(
-          {
-            success: false,
-            message: "البريد الإلكتروني مستخدم مسبقًا"
-          },
-          409
-        );
-      }
-
-      const password_hash = await bcrypt.hash(password, 10);
-
-      const code = generateCode();
-
-      const expiresAt = new Date(
-        Date.now() + CODE_TTL_MINUTES * 60 * 1000
-      ).toISOString();
-
-      const now = new Date().toISOString();
-
-      if (existing) {
-        await env.DB
-          .prepare(
-            `UPDATE users
-             SET full_name = ?,
-                 password_hash = ?,
-                 verification_code = ?,
-                 code_expires_at = ?,
-                 code_attempts = 0,
-                 last_code_sent_at = ?
-             WHERE email = ?`
-          )
-          .bind(
-            full_name || "",
-            password_hash,
-            code,
-            expiresAt,
-            now,
-            email
-          )
-          .run();
-      } else {
-        const id = crypto.randomUUID();
-
-        await env.DB
-          .prepare(
-            `INSERT INTO users
-             (
-               id,
-               full_name,
-               email,
-               password_hash,
-               verified,
-               verification_code,
-               code_expires_at,
-               last_code_sent_at
-             )
-             VALUES (?, ?, ?, ?, 0, ?, ?, ?)`
-          )
-          .bind(
-            id,
-            full_name || "",
-            email,
-            password_hash,
-            code,
-            expiresAt,
-            now
-          )
-          .run();
-      }
-
-      // إرسال كود التحقق بواسطة Resend
-      const emailSent = await sendVerificationEmail(
-        env,
-        email,
-        full_name,
-        code
+      return json(
+        {
+          success: false,
+          message: "خطأ داخلي بالسيرفر",
+          // معلومة تشخيصية مؤقتة، احذفها بعد ما تحل المشكلة
+          debug: String(err && err.message ? err.message : err)
+        },
+        500
       );
+    }
+  }
+};
 
-      // لا نرجع نجاح إذا فشل إرسال البريد
-      if (!emailSent) {
-        return json(
-          {
-            success: false,
-            message: "تم إنشاء الحساب لكن فشل إرسال رمز التحقق إلى البريد"
-          },
-          502
-        );
-      }
+async function handleRequest(request, env) {
+  const url = new URL(request.url);
 
-      return json({
-        success: true,
-        message: "تم إنشاء الحساب، تحقق من بريدك الإلكتروني",
-        email
-      });
+  // ========================================================
+  // REGISTER
+  // ========================================================
+
+  if (url.pathname === "/api/register") {
+    if (request.method !== "POST") {
+      return json(
+        { success: false, message: "استخدم POST" },
+        405
+      );
     }
 
-    // ========================================================
-    // VERIFY EMAIL
-    // ========================================================
+    const data = await request.json();
+    const { full_name, email, password } = data;
 
-    if (url.pathname === "/api/verify-email") {
-      if (request.method !== "POST") {
-        return json(
-          {
-            success: false,
-            message: "استخدم POST"
-          },
-          405
-        );
-      }
+    if (!email || !password) {
+      return json(
+        {
+          success: false,
+          message: "email و password مطلوبان"
+        },
+        400
+      );
+    }
 
-      const data = await request.json();
-      const { email, code } = data;
+    if (!isValidEmail(email)) {
+      return json(
+        {
+          success: false,
+          message: "صيغة البريد الإلكتروني غير صحيحة"
+        },
+        400
+      );
+    }
 
-      if (!email || !code) {
-        return json(
-          {
-            success: false,
-            message: "email و code مطلوبان"
-          },
-          400
-        );
-      }
+    const existing = await env.DB
+      .prepare(
+        "SELECT id, verified FROM users WHERE email = ?"
+      )
+      .bind(email)
+      .first();
 
-      const user = await env.DB
-        .prepare(
-          `SELECT
-             id,
-             verified,
-             verification_code,
-             code_expires_at,
-             code_attempts
-           FROM users
-           WHERE email = ?`
-        )
-        .bind(email)
-        .first();
+    if (existing && existing.verified) {
+      return json(
+        {
+          success: false,
+          message: "البريد الإلكتروني مستخدم مسبقًا"
+        },
+        409
+      );
+    }
 
-      if (!user) {
-        return json(
-          {
-            success: false,
-            message: "الحساب غير موجود"
-          },
-          404
-        );
-      }
+    const password_hash = await bcrypt.hash(password, 10);
 
-      if (user.verified) {
-        return json(
-          {
-            success: false,
-            message: "الحساب مفعّل مسبقًا"
-          },
-          409
-        );
-      }
+    const code = generateCode();
 
-      if (user.code_attempts >= MAX_CODE_ATTEMPTS) {
-        return json(
-          {
-            success: false,
-            message: "محاولات كثيرة، اطلب رمزًا جديدًا"
-          },
-          429
-        );
-      }
+    const expiresAt = new Date(
+      Date.now() + CODE_TTL_MINUTES * 60 * 1000
+    ).toISOString();
 
-      if (
-        !user.verification_code ||
-        !user.code_expires_at ||
-        new Date(user.code_expires_at) < new Date()
-      ) {
-        return json(
-          {
-            success: false,
-            message: "الرمز منتهي الصلاحية، اطلب رمزًا جديدًا"
-          },
-          410
-        );
-      }
+    const now = new Date().toISOString();
 
-      if (user.verification_code !== code) {
-        await env.DB
-          .prepare(
-            `UPDATE users
-             SET code_attempts = code_attempts + 1
-             WHERE id = ?`
-          )
-          .bind(user.id)
-          .run();
-
-        return json(
-          {
-            success: false,
-            message: "الرمز غير صحيح"
-          },
-          401
-        );
-      }
-
+    if (existing) {
       await env.DB
         .prepare(
           `UPDATE users
-           SET verified = 1,
-               verification_code = NULL,
-               code_expires_at = NULL,
-               code_attempts = 0
+           SET full_name = ?,
+               password_hash = ?,
+               verification_code = ?,
+               code_expires_at = ?,
+               code_attempts = 0,
+               last_code_sent_at = ?
+           WHERE email = ?`
+        )
+        .bind(
+          full_name || "",
+          password_hash,
+          code,
+          expiresAt,
+          now,
+          email
+        )
+        .run();
+    } else {
+      const id = crypto.randomUUID();
+
+      await env.DB
+        .prepare(
+          `INSERT INTO users
+           (
+             id,
+             full_name,
+             email,
+             password_hash,
+             verified,
+             verification_code,
+             code_expires_at,
+             last_code_sent_at
+           )
+           VALUES (?, ?, ?, ?, 0, ?, ?, ?)`
+        )
+        .bind(
+          id,
+          full_name || "",
+          email,
+          password_hash,
+          code,
+          expiresAt,
+          now
+        )
+        .run();
+    }
+
+    // إرسال كود التحقق بواسطة Resend
+    const emailResult = await sendVerificationEmail(
+      env,
+      email,
+      full_name,
+      code
+    );
+
+    // لا نرجع نجاح إذا فشل إرسال البريد
+    if (!emailResult.ok) {
+      return json(
+        {
+          success: false,
+          message: "تم إنشاء الحساب لكن فشل إرسال رمز التحقق إلى البريد",
+          // معلومة تشخيصية مؤقتة، احذفها بعد ما تحل المشكلة
+          debug: emailResult.error
+        },
+        502
+      );
+    }
+
+    return json({
+      success: true,
+      message: "تم إنشاء الحساب، تحقق من بريدك الإلكتروني",
+      email
+    });
+  }
+
+  // ========================================================
+  // VERIFY EMAIL
+  // ========================================================
+
+  if (url.pathname === "/api/verify-email") {
+    if (request.method !== "POST") {
+      return json(
+        {
+          success: false,
+          message: "استخدم POST"
+        },
+        405
+      );
+    }
+
+    const data = await request.json();
+    const { email, code } = data;
+
+    if (!email || !code) {
+      return json(
+        {
+          success: false,
+          message: "email و code مطلوبان"
+        },
+        400
+      );
+    }
+
+    const user = await env.DB
+      .prepare(
+        `SELECT
+           id,
+           verified,
+           verification_code,
+           code_expires_at,
+           code_attempts
+         FROM users
+         WHERE email = ?`
+      )
+      .bind(email)
+      .first();
+
+    if (!user) {
+      return json(
+        {
+          success: false,
+          message: "الحساب غير موجود"
+        },
+        404
+      );
+    }
+
+    if (user.verified) {
+      return json(
+        {
+          success: false,
+          message: "الحساب مفعّل مسبقًا"
+        },
+        409
+      );
+    }
+
+    if (user.code_attempts >= MAX_CODE_ATTEMPTS) {
+      return json(
+        {
+          success: false,
+          message: "محاولات كثيرة، اطلب رمزًا جديدًا"
+        },
+        429
+      );
+    }
+
+    if (
+      !user.verification_code ||
+      !user.code_expires_at ||
+      new Date(user.code_expires_at) < new Date()
+    ) {
+      return json(
+        {
+          success: false,
+          message: "الرمز منتهي الصلاحية، اطلب رمزًا جديدًا"
+        },
+        410
+      );
+    }
+
+    if (user.verification_code !== code) {
+      await env.DB
+        .prepare(
+          `UPDATE users
+           SET code_attempts = code_attempts + 1
            WHERE id = ?`
         )
         .bind(user.id)
         .run();
 
-      const token = crypto.randomUUID();
-
-      const sessionExpiresAt = new Date(
-        Date.now() + 30 * 24 * 60 * 60 * 1000
-      ).toISOString();
-
-      await env.DB
-        .prepare(
-          `INSERT INTO sessions
-           (token, user_id, expires_at)
-           VALUES (?, ?, ?)`
-        )
-        .bind(
-          token,
-          user.id,
-          sessionExpiresAt
-        )
-        .run();
-
-      return json({
-        success: true,
-        message: "تم تفعيل الحساب",
-        token
-      });
+      return json(
+        {
+          success: false,
+          message: "الرمز غير صحيح"
+        },
+        401
+      );
     }
 
-    // ========================================================
-    // RESEND CODE
-    // ========================================================
+    await env.DB
+      .prepare(
+        `UPDATE users
+         SET verified = 1,
+             verification_code = NULL,
+             code_expires_at = NULL,
+             code_attempts = 0
+         WHERE id = ?`
+      )
+      .bind(user.id)
+      .run();
 
-    if (url.pathname === "/api/resend-code") {
-      if (request.method !== "POST") {
-        return json(
-          {
-            success: false,
-            message: "استخدم POST"
-          },
-          405
-        );
-      }
+    const token = crypto.randomUUID();
 
-      const data = await request.json();
-      const { email } = data;
+    const sessionExpiresAt = new Date(
+      Date.now() + 30 * 24 * 60 * 60 * 1000
+    ).toISOString();
 
-      if (!email) {
-        return json(
-          {
-            success: false,
-            message: "email مطلوب"
-          },
-          400
-        );
-      }
-
-      const user = await env.DB
-        .prepare(
-          `SELECT
-             id,
-             full_name,
-             verified,
-             last_code_sent_at
-           FROM users
-           WHERE email = ?`
-        )
-        .bind(email)
-        .first();
-
-      if (!user) {
-        return json(
-          {
-            success: false,
-            message: "الحساب غير موجود"
-          },
-          404
-        );
-      }
-
-      if (user.verified) {
-        return json(
-          {
-            success: false,
-            message: "الحساب مفعّل مسبقًا"
-          },
-          409
-        );
-      }
-
-      if (user.last_code_sent_at) {
-        const elapsed =
-          (Date.now() -
-            new Date(user.last_code_sent_at).getTime()) /
-          1000;
-
-        if (elapsed < RESEND_COOLDOWN_SECONDS) {
-          const wait = Math.ceil(
-            RESEND_COOLDOWN_SECONDS - elapsed
-          );
-
-          return json(
-            {
-              success: false,
-              message: `الرجاء الانتظار ${wait} ثانية قبل إعادة الإرسال`
-            },
-            429
-          );
-        }
-      }
-
-      const code = generateCode();
-
-      const expiresAt = new Date(
-        Date.now() + CODE_TTL_MINUTES * 60 * 1000
-      ).toISOString();
-
-      const now = new Date().toISOString();
-
-      await env.DB
-        .prepare(
-          `UPDATE users
-           SET verification_code = ?,
-               code_expires_at = ?,
-               code_attempts = 0,
-               last_code_sent_at = ?
-           WHERE id = ?`
-        )
-        .bind(
-          code,
-          expiresAt,
-          now,
-          user.id
-        )
-        .run();
-
-      // إرسال الرمز الجديد
-      const emailSent = await sendVerificationEmail(
-        env,
-        email,
-        user.full_name,
-        code
-      );
-
-      if (!emailSent) {
-        return json(
-          {
-            success: false,
-            message: "فشل إرسال رمز التحقق، حاول مرة أخرى"
-          },
-          502
-        );
-      }
-
-      return json({
-        success: true,
-        message: "تم إرسال رمز جديد إلى بريدك الإلكتروني"
-      });
-    }
-
-    // ========================================================
-    // LOGIN
-    // ========================================================
-
-    if (url.pathname === "/api/login") {
-      if (request.method !== "POST") {
-        return json(
-          {
-            success: false,
-            message: "استخدم POST"
-          },
-          405
-        );
-      }
-
-      const data = await request.json();
-      const { email, password } = data;
-
-      if (!email || !password) {
-        return json(
-          {
-            success: false,
-            message: "email و password مطلوبان"
-          },
-          400
-        );
-      }
-
-      const user = await env.DB
-        .prepare(
-          `SELECT
-             id,
-             email,
-             password_hash,
-             verified
-           FROM users
-           WHERE email = ?`
-        )
-        .bind(email)
-        .first();
-
-      if (!user) {
-        return json(
-          {
-            success: false,
-            message: "البريد الإلكتروني أو كلمة المرور غير صحيحة"
-          },
-          401
-        );
-      }
-
-      const valid = await bcrypt.compare(
-        password,
-        user.password_hash
-      );
-
-      if (!valid) {
-        return json(
-          {
-            success: false,
-            message: "البريد الإلكتروني أو كلمة المرور غير صحيحة"
-          },
-          401
-        );
-      }
-
-      if (!user.verified) {
-        return json(
-          {
-            success: false,
-            message: "الحساب غير مفعّل، تحقق من بريدك الإلكتروني"
-          },
-          403
-        );
-      }
-
-      const token = crypto.randomUUID();
-
-      const expiresAt = new Date(
-        Date.now() + 30 * 24 * 60 * 60 * 1000
-      ).toISOString();
-
-      await env.DB
-        .prepare(
-          `INSERT INTO sessions
-           (token, user_id, expires_at)
-           VALUES (?, ?, ?)`
-        )
-        .bind(
-          token,
-          user.id,
-          expiresAt
-        )
-        .run();
-
-      return json({
-        success: true,
-        message: "تم تسجيل الدخول",
+    await env.DB
+      .prepare(
+        `INSERT INTO sessions
+         (token, user_id, expires_at)
+         VALUES (?, ?, ?)`
+      )
+      .bind(
         token,
-        user: {
-          id: user.id,
-          email: user.email
-        }
-      });
-    }
-
-    // ========================================================
-    // LOGOUT
-    // ========================================================
-
-    if (
-      url.pathname === "/api/logout" &&
-      request.method === "POST"
-    ) {
-      const token = getToken(request);
-
-      if (!token) {
-        return json(
-          {
-            success: false,
-            message: "غير مسجل الدخول"
-          },
-          401
-        );
-      }
-
-      const ownerDel = await env.DB
-        .prepare(
-          "DELETE FROM sessions WHERE token = ?"
-        )
-        .bind(token)
-        .run();
-
-      if (
-        !ownerDel.meta ||
-        ownerDel.meta.changes === 0
-      ) {
-        await env.DB
-          .prepare(
-            "DELETE FROM worker_sessions WHERE token = ?"
-          )
-          .bind(token)
-          .run();
-      }
-
-      return json({
-        success: true,
-        message: "تم تسجيل الخروج"
-      });
-    }
-
-    // ========================================================
-    // إنشاء كود دعوة عامل
-    // المالك فقط
-    // ========================================================
-
-    if (
-      url.pathname === "/api/workers/generate" &&
-      request.method === "POST"
-    ) {
-      const token = getToken(request);
-
-      if (!token) {
-        return json(
-          {
-            success: false,
-            message: "غير مسجل الدخول"
-          },
-          401
-        );
-      }
-
-      const access = await getAccess(env, token);
-
-      if (!access) {
-        return json(
-          {
-            success: false,
-            message: "الجلسة غير صالحة أو منتهية"
-          },
-          401
-        );
-      }
-
-      if (access.type !== "owner") {
-        return json(
-          {
-            success: false,
-            message: "العامل ما يقدر يضيف عمال جدد"
-          },
-          403
-        );
-      }
-
-      const code = generateCode();
-
-      const expiresAt = new Date(
-        Date.now() +
-          WORKER_CODE_TTL_MINUTES * 60 * 1000
-      ).toISOString();
-
-      const id = crypto.randomUUID();
-
-      await env.DB
-        .prepare(
-          `INSERT INTO workers
-           (
-             id,
-             owner_user_id,
-             code,
-             code_expires_at,
-             status
-           )
-           VALUES (?, ?, ?, ?, 'pending')`
-        )
-        .bind(
-          id,
-          access.owner_user_id,
-          code,
-          expiresAt
-        )
-        .run();
-
-      return json({
-        success: true,
-        message:
-          "شارك هذا الكود مع العامل، صالح لمدة 15 دقيقة",
-        code,
-        expires_at: expiresAt
-      });
-    }
-
-    // ========================================================
-    // انضمام العامل بالكود
-    // بدون تسجيل دخول
-    // ========================================================
-
-    if (
-      url.pathname === "/api/workers/join" &&
-      request.method === "POST"
-    ) {
-      const data = await request.json();
-      const { code, name } = data;
-
-      if (!code) {
-        return json(
-          {
-            success: false,
-            message: "الكود مطلوب"
-          },
-          400
-        );
-      }
-
-      const pending = await env.DB
-        .prepare(
-          `SELECT
-             id,
-             owner_user_id,
-             code_expires_at,
-             status
-           FROM workers
-           WHERE code = ?
-             AND status = 'pending'`
-        )
-        .bind(code)
-        .first();
-
-      if (!pending) {
-        return json(
-          {
-            success: false,
-            message: "الكود غير صحيح"
-          },
-          404
-        );
-      }
-
-      if (
-        new Date(pending.code_expires_at) <
-        new Date()
-      ) {
-        return json(
-          {
-            success: false,
-            message:
-              "الكود منتهي الصلاحية، اطلب كودًا جديدًا"
-          },
-          410
-        );
-      }
-
-      const now = new Date().toISOString();
-
-      await env.DB
-        .prepare(
-          `UPDATE workers
-           SET status = 'active',
-               name = ?,
-               joined_at = ?,
-               code = NULL,
-               code_expires_at = NULL
-           WHERE id = ?`
-        )
-        .bind(
-          name || "عامل",
-          now,
-          pending.id
-        )
-        .run();
-
-      const token = crypto.randomUUID();
-
-      const expiresAt = new Date(
-        Date.now() + 30 * 24 * 60 * 60 * 1000
-      ).toISOString();
-
-      await env.DB
-        .prepare(
-          `INSERT INTO worker_sessions
-           (
-             token,
-             worker_id,
-             owner_user_id,
-             expires_at
-           )
-           VALUES (?, ?, ?, ?)`
-        )
-        .bind(
-          token,
-          pending.id,
-          pending.owner_user_id,
-          expiresAt
-        )
-        .run();
-
-      return json({
-        success: true,
-        message: "تم الانضمام بنجاح",
-        token
-      });
-    }
-
-    // ========================================================
-    // قائمة العمال
-    // المالك فقط
-    // ========================================================
-
-    if (
-      url.pathname === "/api/workers" &&
-      request.method === "GET"
-    ) {
-      const token = getToken(request);
-
-      if (!token) {
-        return json(
-          {
-            success: false,
-            message: "غير مسجل الدخول"
-          },
-          401
-        );
-      }
-
-      const access = await getAccess(env, token);
-
-      if (!access) {
-        return json(
-          {
-            success: false,
-            message: "الجلسة غير صالحة أو منتهية"
-          },
-          401
-        );
-      }
-
-      if (access.type !== "owner") {
-        return json(
-          {
-            success: false,
-            message: "غير مصرح"
-          },
-          403
-        );
-      }
-
-      const result = await env.DB
-        .prepare(
-          `SELECT
-             id,
-             name,
-             status,
-             joined_at,
-             created_at
-           FROM workers
-           WHERE owner_user_id = ?
-             AND status = 'active'
-           ORDER BY joined_at DESC`
-        )
-        .bind(access.owner_user_id)
-        .all();
-
-      return json({
-        success: true,
-        workers: result.results
-      });
-    }
-
-    // ========================================================
-    // حذف عامل
-    // المالك فقط
-    // ========================================================
-
-    if (
-      url.pathname.startsWith("/api/workers/") &&
-      request.method === "DELETE"
-    ) {
-      const token = getToken(request);
-
-      if (!token) {
-        return json(
-          {
-            success: false,
-            message: "غير مسجل الدخول"
-          },
-          401
-        );
-      }
-
-      const access = await getAccess(env, token);
-
-      if (!access) {
-        return json(
-          {
-            success: false,
-            message: "الجلسة غير صالحة أو منتهية"
-          },
-          401
-        );
-      }
-
-      if (access.type !== "owner") {
-        return json(
-          {
-            success: false,
-            message: "غير مصرح"
-          },
-          403
-        );
-      }
-
-      const workerId =
-        url.pathname.replace(
-          "/api/workers/",
-          ""
-        );
-
-      const worker = await env.DB
-        .prepare(
-          `SELECT id
-           FROM workers
-           WHERE id = ?
-             AND owner_user_id = ?`
-        )
-        .bind(
-          workerId,
-          access.owner_user_id
-        )
-        .first();
-
-      if (!worker) {
-        return json(
-          {
-            success: false,
-            message: "العامل غير موجود"
-          },
-          404
-        );
-      }
-
-      // نحذف كل جلساته أولًا
-      await env.DB
-        .prepare(
-          "DELETE FROM worker_sessions WHERE worker_id = ?"
-        )
-        .bind(workerId)
-        .run();
-
-      // ثم نحذف العامل
-      await env.DB
-        .prepare(
-          "DELETE FROM workers WHERE id = ?"
-        )
-        .bind(workerId)
-        .run();
-
-      return json({
-        success: true,
-        message: "تم حذف العامل، فقد الوصول للحساب"
-      });
-    }
-
-    // ========================================================
-    // CREATE NOTEBOOK
-    // ========================================================
-
-    if (
-      url.pathname === "/api/notebooks" &&
-      request.method === "POST"
-    ) {
-      const token = getToken(request);
-
-      if (!token) {
-        return json(
-          {
-            success: false,
-            message: "غير مسجل الدخول"
-          },
-          401
-        );
-      }
-
-      const access = await getAccess(env, token);
-
-      if (!access) {
-        return json(
-          {
-            success: false,
-            message: "الجلسة غير صالحة أو منتهية"
-          },
-          401
-        );
-      }
-
-      const data = await request.json();
-
-      const title =
-        data.title || "سجل جديد";
-
-      const id = crypto.randomUUID();
-
-      await env.DB
-        .prepare(
-          `INSERT INTO notebooks
-           (id, user_id, title)
-           VALUES (?, ?, ?)`
-        )
-        .bind(
-          id,
-          access.owner_user_id,
-          title
-        )
-        .run();
-
-      return json({
-        success: true,
-        message: "تم إنشاء السجل",
-        notebook: {
-          id,
-          title
-        }
-      });
-    }
-
-    // ========================================================
-    // ADD ROW
-    // ========================================================
-
-    if (
-      url.pathname === "/api/rows" &&
-      request.method === "POST"
-    ) {
-      const token = getToken(request);
-
-      if (!token) {
-        return json(
-          {
-            success: false,
-            message: "غير مسجل الدخول"
-          },
-          401
-        );
-      }
-
-      const access = await getAccess(env, token);
-
-      if (!access) {
-        return json(
-          {
-            success: false,
-            message: "الجلسة غير صالحة أو منتهية"
-          },
-          401
-        );
-      }
-
-      const data = await request.json();
-
-      const {
-        notebook_id,
-        name,
-        amount = 0,
-        quantity = 0,
-        notes = ""
-      } = data;
-
-      if (!notebook_id) {
-        return json(
-          {
-            success: false,
-            message: "notebook_id مطلوب"
-          },
-          400
-        );
-      }
-
-      const notebook = await env.DB
-        .prepare(
-          `SELECT id
-           FROM notebooks
-           WHERE id = ?
-             AND user_id = ?`
-        )
-        .bind(
-          notebook_id,
-          access.owner_user_id
-        )
-        .first();
-
-      if (!notebook) {
-        return json(
-          {
-            success: false,
-            message: "السجل غير موجود"
-          },
-          404
-        );
-      }
-
-      const positionResult = await env.DB
-        .prepare(
-          `SELECT
-             COALESCE(MAX(position), -1) + 1 AS position
-           FROM rows
-           WHERE notebook_id = ?`
-        )
-        .bind(notebook_id)
-        .first();
-
-      const position =
-        positionResult.position;
-
-      const id = crypto.randomUUID();
-
-      await env.DB
-        .prepare(
-          `INSERT INTO rows
-           (
-             id,
-             notebook_id,
-             position,
-             name,
-             amount,
-             quantity,
-             notes
-           )
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        )
-        .bind(
-          id,
-          notebook_id,
-          position,
-          name || "",
-          Number(amount) || 0,
-          Number(quantity) || 0,
-          notes || ""
-        )
-        .run();
-
-      return json({
-        success: true,
-        message: "تمت إضافة الصف",
-        row: {
-          id,
-          notebook_id,
-          position,
-          name: name || "",
-          amount: Number(amount) || 0,
-          quantity: Number(quantity) || 0,
-          notes: notes || ""
-        }
-      });
-    }
-
-    // ========================================================
-    // GET ROWS
-    // ========================================================
-
-    if (
-      url.pathname === "/api/rows" &&
-      request.method === "GET"
-    ) {
-      const token = getToken(request);
-
-      const notebookId =
-        url.searchParams.get("notebook_id");
-
-      if (!token) {
-        return json(
-          {
-            success: false,
-            message: "غير مسجل الدخول"
-          },
-          401
-        );
-      }
-
-      const access = await getAccess(env, token);
-
-      if (!access) {
-        return json(
-          {
-            success: false,
-            message: "الجلسة غير صالحة أو منتهية"
-          },
-          401
-        );
-      }
-
-      if (!notebookId) {
-        return json(
-          {
-            success: false,
-            message: "notebook_id مطلوب"
-          },
-          400
-        );
-      }
-
-      const notebook = await env.DB
-        .prepare(
-          `SELECT
-             id,
-             title
-           FROM notebooks
-           WHERE id = ?
-             AND user_id = ?`
-        )
-        .bind(
-          notebookId,
-          access.owner_user_id
-        )
-        .first();
-
-      if (!notebook) {
-        return json(
-          {
-            success: false,
-            message: "السجل غير موجود"
-          },
-          404
-        );
-      }
-
-      const result = await env.DB
-        .prepare(
-          `SELECT
-             id,
-             notebook_id,
-             position,
-             name,
-             amount,
-             quantity,
-             notes
-           FROM rows
-           WHERE notebook_id = ?
-           ORDER BY position ASC`
-        )
-        .bind(notebookId)
-        .all();
-
-      return json({
-        success: true,
-        notebook,
-        rows: result.results
-      });
-    }
-
-    // ========================================================
-    // Default
-    // ========================================================
+        user.id,
+        sessionExpiresAt
+      )
+      .run();
 
     return json({
       success: true,
-      message: "Sijil API يعمل"
+      message: "تم تفعيل الحساب",
+      token
     });
   }
-};
+
+  // ========================================================
+  // RESEND CODE
+  // ========================================================
+
+  if (url.pathname === "/api/resend-code") {
+    if (request.method !== "POST") {
+      return json(
+        {
+          success: false,
+          message: "استخدم POST"
+        },
+        405
+      );
+    }
+
+    const data = await request.json();
+    const { email } = data;
+
+    if (!email) {
+      return json(
+        {
+          success: false,
+          message: "email مطلوب"
+        },
+        400
+      );
+    }
+
+    const user = await env.DB
+      .prepare(
+        `SELECT
+           id,
+           full_name,
+           verified,
+           last_code_sent_at
+         FROM users
+         WHERE email = ?`
+      )
+      .bind(email)
+      .first();
+
+    if (!user) {
+      return json(
+        {
+          success: false,
+          message: "الحساب غير موجود"
+        },
+        404
+      );
+    }
+
+    if (user.verified) {
+      return json(
+        {
+          success: false,
+          message: "الحساب مفعّل مسبقًا"
+        },
+        409
+      );
+    }
+
+    if (user.last_code_sent_at) {
+      const elapsed =
+        (Date.now() -
+          new Date(user.last_code_sent_at).getTime()) /
+        1000;
+
+      if (elapsed < RESEND_COOLDOWN_SECONDS) {
+        const wait = Math.ceil(
+          RESEND_COOLDOWN_SECONDS - elapsed
+        );
+
+        return json(
+          {
+            success: false,
+            message: `الرجاء الانتظار ${wait} ثانية قبل إعادة الإرسال`
+          },
+          429
+        );
+      }
+    }
+
+    const code = generateCode();
+
+    const expiresAt = new Date(
+      Date.now() + CODE_TTL_MINUTES * 60 * 1000
+    ).toISOString();
+
+    const now = new Date().toISOString();
+
+    await env.DB
+      .prepare(
+        `UPDATE users
+         SET verification_code = ?,
+             code_expires_at = ?,
+             code_attempts = 0,
+             last_code_sent_at = ?
+         WHERE id = ?`
+      )
+      .bind(
+        code,
+        expiresAt,
+        now,
+        user.id
+      )
+      .run();
+
+    // إرسال الرمز الجديد
+    const emailResult = await sendVerificationEmail(
+      env,
+      email,
+      user.full_name,
+      code
+    );
+
+    if (!emailResult.ok) {
+      return json(
+        {
+          success: false,
+          message: "فشل إرسال رمز التحقق، حاول مرة أخرى",
+          debug: emailResult.error
+        },
+        502
+      );
+    }
+
+    return json({
+      success: true,
+      message: "تم إرسال رمز جديد إلى بريدك الإلكتروني"
+    });
+  }
+
+  // ========================================================
+  // LOGIN
+  // ========================================================
+
+  if (url.pathname === "/api/login") {
+    if (request.method !== "POST") {
+      return json(
+        {
+          success: false,
+          message: "استخدم POST"
+        },
+        405
+      );
+    }
+
+    const data = await request.json();
+    const { email, password } = data;
+
+    if (!email || !password) {
+      return json(
+        {
+          success: false,
+          message: "email و password مطلوبان"
+        },
+        400
+      );
+    }
+
+    const user = await env.DB
+      .prepare(
+        `SELECT
+           id,
+           email,
+           password_hash,
+           verified
+         FROM users
+         WHERE email = ?`
+      )
+      .bind(email)
+      .first();
+
+    if (!user) {
+      return json(
+        {
+          success: false,
+          message: "البريد الإلكتروني أو كلمة المرور غير صحيحة"
+        },
+        401
+      );
+    }
+
+    const valid = await bcrypt.compare(
+      password,
+      user.password_hash
+    );
+
+    if (!valid) {
+      return json(
+        {
+          success: false,
+          message: "البريد الإلكتروني أو كلمة المرور غير صحيحة"
+        },
+        401
+      );
+    }
+
+    if (!user.verified) {
+      return json(
+        {
+          success: false,
+          message: "الحساب غير مفعّل، تحقق من بريدك الإلكتروني"
+        },
+        403
+      );
+    }
+
+    const token = crypto.randomUUID();
+
+    const expiresAt = new Date(
+      Date.now() + 30 * 24 * 60 * 60 * 1000
+    ).toISOString();
+
+    await env.DB
+      .prepare(
+        `INSERT INTO sessions
+         (token, user_id, expires_at)
+         VALUES (?, ?, ?)`
+      )
+      .bind(
+        token,
+        user.id,
+        expiresAt
+      )
+      .run();
+
+    return json({
+      success: true,
+      message: "تم تسجيل الدخول",
+      token,
+      user: {
+        id: user.id,
+        email: user.email
+      }
+    });
+  }
+
+  // ========================================================
+  // LOGOUT
+  // ========================================================
+
+  if (
+    url.pathname === "/api/logout" &&
+    request.method === "POST"
+  ) {
+    const token = getToken(request);
+
+    if (!token) {
+      return json(
+        {
+          success: false,
+          message: "غير مسجل الدخول"
+        },
+        401
+      );
+    }
+
+    const ownerDel = await env.DB
+      .prepare(
+        "DELETE FROM sessions WHERE token = ?"
+      )
+      .bind(token)
+      .run();
+
+    if (
+      !ownerDel.meta ||
+      ownerDel.meta.changes === 0
+    ) {
+      await env.DB
+        .prepare(
+          "DELETE FROM worker_sessions WHERE token = ?"
+        )
+        .bind(token)
+        .run();
+    }
+
+    return json({
+      success: true,
+      message: "تم تسجيل الخروج"
+    });
+  }
+
+  // ========================================================
+  // إنشاء كود دعوة عامل
+  // المالك فقط
+  // ========================================================
+
+  if (
+    url.pathname === "/api/workers/generate" &&
+    request.method === "POST"
+  ) {
+    const token = getToken(request);
+
+    if (!token) {
+      return json(
+        {
+          success: false,
+          message: "غير مسجل الدخول"
+        },
+        401
+      );
+    }
+
+    const access = await getAccess(env, token);
+
+    if (!access) {
+      return json(
+        {
+          success: false,
+          message: "الجلسة غير صالحة أو منتهية"
+        },
+        401
+      );
+    }
+
+    if (access.type !== "owner") {
+      return json(
+        {
+          success: false,
+          message: "العامل ما يقدر يضيف عمال جدد"
+        },
+        403
+      );
+    }
+
+    const code = generateCode();
+
+    const expiresAt = new Date(
+      Date.now() +
+        WORKER_CODE_TTL_MINUTES * 60 * 1000
+    ).toISOString();
+
+    const id = crypto.randomUUID();
+
+    await env.DB
+      .prepare(
+        `INSERT INTO workers
+         (
+           id,
+           owner_user_id,
+           code,
+           code_expires_at,
+           status
+         )
+         VALUES (?, ?, ?, ?, 'pending')`
+      )
+      .bind(
+        id,
+        access.owner_user_id,
+        code,
+        expiresAt
+      )
+      .run();
+
+    return json({
+      success: true,
+      message:
+        "شارك هذا الكود مع العامل، صالح لمدة 15 دقيقة",
+      code,
+      expires_at: expiresAt
+    });
+  }
+
+  // ========================================================
+  // انضمام العامل بالكود
+  // بدون تسجيل دخول
+  // ========================================================
+
+  if (
+    url.pathname === "/api/workers/join" &&
+    request.method === "POST"
+  ) {
+    const data = await request.json();
+    const { code, name } = data;
+
+    if (!code) {
+      return json(
+        {
+          success: false,
+          message: "الكود مطلوب"
+        },
+        400
+      );
+    }
+
+    const pending = await env.DB
+      .prepare(
+        `SELECT
+           id,
+           owner_user_id,
+           code_expires_at,
+           status
+         FROM workers
+         WHERE code = ?
+           AND status = 'pending'`
+      )
+      .bind(code)
+      .first();
+
+    if (!pending) {
+      return json(
+        {
+          success: false,
+          message: "الكود غير صحيح"
+        },
+        404
+      );
+    }
+
+    if (
+      new Date(pending.code_expires_at) <
+      new Date()
+    ) {
+      return json(
+        {
+          success: false,
+          message:
+            "الكود منتهي الصلاحية، اطلب كودًا جديدًا"
+        },
+        410
+      );
+    }
+
+    const now = new Date().toISOString();
+
+    await env.DB
+      .prepare(
+        `UPDATE workers
+         SET status = 'active',
+             name = ?,
+             joined_at = ?,
+             code = NULL,
+             code_expires_at = NULL
+         WHERE id = ?`
+      )
+      .bind(
+        name || "عامل",
+        now,
+        pending.id
+      )
+      .run();
+
+    const token = crypto.randomUUID();
+
+    const expiresAt = new Date(
+      Date.now() + 30 * 24 * 60 * 60 * 1000
+    ).toISOString();
+
+    await env.DB
+      .prepare(
+        `INSERT INTO worker_sessions
+         (
+           token,
+           worker_id,
+           owner_user_id,
+           expires_at
+         )
+         VALUES (?, ?, ?, ?)`
+      )
+      .bind(
+        token,
+        pending.id,
+        pending.owner_user_id,
+        expiresAt
+      )
+      .run();
+
+    return json({
+      success: true,
+      message: "تم الانضمام بنجاح",
+      token
+    });
+  }
+
+  // ========================================================
+  // قائمة العمال
+  // المالك فقط
+  // ========================================================
+
+  if (
+    url.pathname === "/api/workers" &&
+    request.method === "GET"
+  ) {
+    const token = getToken(request);
+
+    if (!token) {
+      return json(
+        {
+          success: false,
+          message: "غير مسجل الدخول"
+        },
+        401
+      );
+    }
+
+    const access = await getAccess(env, token);
+
+    if (!access) {
+      return json(
+        {
+          success: false,
+          message: "الجلسة غير صالحة أو منتهية"
+        },
+        401
+      );
+    }
+
+    if (access.type !== "owner") {
+      return json(
+        {
+          success: false,
+          message: "غير مصرح"
+        },
+        403
+      );
+    }
+
+    const result = await env.DB
+      .prepare(
+        `SELECT
+           id,
+           name,
+           status,
+           joined_at,
+           created_at
+         FROM workers
+         WHERE owner_user_id = ?
+           AND status = 'active'
+         ORDER BY joined_at DESC`
+      )
+      .bind(access.owner_user_id)
+      .all();
+
+    return json({
+      success: true,
+      workers: result.results
+    });
+  }
+
+  // ========================================================
+  // حذف عامل
+  // المالك فقط
+  // ========================================================
+
+  if (
+    url.pathname.startsWith("/api/workers/") &&
+    request.method === "DELETE"
+  ) {
+    const token = getToken(request);
+
+    if (!token) {
+      return json(
+        {
+          success: false,
+          message: "غير مسجل الدخول"
+        },
+        401
+      );
+    }
+
+    const access = await getAccess(env, token);
+
+    if (!access) {
+      return json(
+        {
+          success: false,
+          message: "الجلسة غير صالحة أو منتهية"
+        },
+        401
+      );
+    }
+
+    if (access.type !== "owner") {
+      return json(
+        {
+          success: false,
+          message: "غير مصرح"
+        },
+        403
+      );
+    }
+
+    const workerId =
+      url.pathname.replace(
+        "/api/workers/",
+        ""
+      );
+
+    const worker = await env.DB
+      .prepare(
+        `SELECT id
+         FROM workers
+         WHERE id = ?
+           AND owner_user_id = ?`
+      )
+      .bind(
+        workerId,
+        access.owner_user_id
+      )
+      .first();
+
+    if (!worker) {
+      return json(
+        {
+          success: false,
+          message: "العامل غير موجود"
+        },
+        404
+      );
+    }
+
+    // نحذف كل جلساته أولًا
+    await env.DB
+      .prepare(
+        "DELETE FROM worker_sessions WHERE worker_id = ?"
+      )
+      .bind(workerId)
+      .run();
+
+    // ثم نحذف العامل
+    await env.DB
+      .prepare(
+        "DELETE FROM workers WHERE id = ?"
+      )
+      .bind(workerId)
+      .run();
+
+    return json({
+      success: true,
+      message: "تم حذف العامل، فقد الوصول للحساب"
+    });
+  }
+
+  // ========================================================
+  // CREATE NOTEBOOK
+  // ========================================================
+
+  if (
+    url.pathname === "/api/notebooks" &&
+    request.method === "POST"
+  ) {
+    const token = getToken(request);
+
+    if (!token) {
+      return json(
+        {
+          success: false,
+          message: "غير مسجل الدخول"
+        },
+        401
+      );
+    }
+
+    const access = await getAccess(env, token);
+
+    if (!access) {
+      return json(
+        {
+          success: false,
+          message: "الجلسة غير صالحة أو منتهية"
+        },
+        401
+      );
+    }
+
+    const data = await request.json();
+
+    const title =
+      data.title || "سجل جديد";
+
+    const id = crypto.randomUUID();
+
+    await env.DB
+      .prepare(
+        `INSERT INTO notebooks
+         (id, user_id, title)
+         VALUES (?, ?, ?)`
+      )
+      .bind(
+        id,
+        access.owner_user_id,
+        title
+      )
+      .run();
+
+    return json({
+      success: true,
+      message: "تم إنشاء السجل",
+      notebook: {
+        id,
+        title
+      }
+    });
+  }
+
+  // ========================================================
+  // ADD ROW
+  // ========================================================
+
+  if (
+    url.pathname === "/api/rows" &&
+    request.method === "POST"
+  ) {
+    const token = getToken(request);
+
+    if (!token) {
+      return json(
+        {
+          success: false,
+          message: "غير مسجل الدخول"
+        },
+        401
+      );
+    }
+
+    const access = await getAccess(env, token);
+
+    if (!access) {
+      return json(
+        {
+          success: false,
+          message: "الجلسة غير صالحة أو منتهية"
+        },
+        401
+      );
+    }
+
+    const data = await request.json();
+
+    const {
+      notebook_id,
+      name,
+      amount = 0,
+      quantity = 0,
+      notes = ""
+    } = data;
+
+    if (!notebook_id) {
+      return json(
+        {
+          success: false,
+          message: "notebook_id مطلوب"
+        },
+        400
+      );
+    }
+
+    const notebook = await env.DB
+      .prepare(
+        `SELECT id
+         FROM notebooks
+         WHERE id = ?
+           AND user_id = ?`
+      )
+      .bind(
+        notebook_id,
+        access.owner_user_id
+      )
+      .first();
+
+    if (!notebook) {
+      return json(
+        {
+          success: false,
+          message: "السجل غير موجود"
+        },
+        404
+      );
+    }
+
+    const positionResult = await env.DB
+      .prepare(
+        `SELECT
+           COALESCE(MAX(position), -1) + 1 AS position
+         FROM rows
+         WHERE notebook_id = ?`
+      )
+      .bind(notebook_id)
+      .first();
+
+    const position =
+      positionResult.position;
+
+    const id = crypto.randomUUID();
+
+    await env.DB
+      .prepare(
+        `INSERT INTO rows
+         (
+           id,
+           notebook_id,
+           position,
+           name,
+           amount,
+           quantity,
+           notes
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        id,
+        notebook_id,
+        position,
+        name || "",
+        Number(amount) || 0,
+        Number(quantity) || 0,
+        notes || ""
+      )
+      .run();
+
+    return json({
+      success: true,
+      message: "تمت إضافة الصف",
+      row: {
+        id,
+        notebook_id,
+        position,
+        name: name || "",
+        amount: Number(amount) || 0,
+        quantity: Number(quantity) || 0,
+        notes: notes || ""
+      }
+    });
+  }
+
+  // ========================================================
+  // GET ROWS
+  // ========================================================
+
+  if (
+    url.pathname === "/api/rows" &&
+    request.method === "GET"
+  ) {
+    const token = getToken(request);
+
+    const notebookId =
+      url.searchParams.get("notebook_id");
+
+    if (!token) {
+      return json(
+        {
+          success: false,
+          message: "غير مسجل الدخول"
+        },
+        401
+      );
+    }
+
+    const access = await getAccess(env, token);
+
+    if (!access) {
+      return json(
+        {
+          success: false,
+          message: "الجلسة غير صالحة أو منتهية"
+        },
+        401
+      );
+    }
+
+    if (!notebookId) {
+      return json(
+        {
+          success: false,
+          message: "notebook_id مطلوب"
+        },
+        400
+      );
+    }
+
+    const notebook = await env.DB
+      .prepare(
+        `SELECT
+           id,
+           title
+         FROM notebooks
+         WHERE id = ?
+           AND user_id = ?`
+      )
+      .bind(
+        notebookId,
+        access.owner_user_id
+      )
+      .first();
+
+    if (!notebook) {
+      return json(
+        {
+          success: false,
+          message: "السجل غير موجود"
+        },
+        404
+      );
+    }
+
+    const result = await env.DB
+      .prepare(
+        `SELECT
+           id,
+           notebook_id,
+           position,
+           name,
+           amount,
+           quantity,
+           notes
+         FROM rows
+         WHERE notebook_id = ?
+         ORDER BY position ASC`
+      )
+      .bind(notebookId)
+      .all();
+
+    return json({
+      success: true,
+      notebook,
+      rows: result.results
+    });
+  }
+
+  // ========================================================
+  // Default
+  // ========================================================
+
+  return json({
+    success: true,
+    message: "Sijil API يعمل"
+  });
+}
 
 // ============================================================
 // أدوات مساعدة
@@ -1356,7 +1382,7 @@ async function sendVerificationEmail(
       "RESEND_API_KEY غير موجود في Secrets"
     );
 
-    return false;
+    return { ok: false, error: "RESEND_API_KEY غير موجود بالسيرفر" };
   }
 
   try {
@@ -1504,7 +1530,12 @@ async function sendVerificationEmail(
         result
       );
 
-      return false;
+      return {
+        ok: false,
+        error:
+          "Resend " + response.status + ": " +
+          (result && result.message ? result.message : JSON.stringify(result))
+      };
     }
 
     console.log(
@@ -1512,7 +1543,7 @@ async function sendVerificationEmail(
       result
     );
 
-    return true;
+    return { ok: true };
 
   } catch (err) {
     console.error(
@@ -1520,7 +1551,7 @@ async function sendVerificationEmail(
       err
     );
 
-    return false;
+    return { ok: false, error: String(err && err.message ? err.message : err) };
   }
 }
 
@@ -1535,4 +1566,4 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
-} 
+}
