@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { WorkerMailer } from "worker-mailer";
 
 // ============ إعدادات عامة ============
 
@@ -1740,7 +1741,7 @@ function json(
 }
 
 // ============================================================
-// إرسال رمز التحقق بواسطة Resend
+// إرسال رمز التحقق عبر Gmail (SMTP - worker-mailer)
 // ============================================================
 
 async function sendVerificationEmail(
@@ -1751,272 +1752,123 @@ async function sendVerificationEmail(
 ) {
 
   // ----------------------------------------------------------
-  // التأكد من وجود المفتاح
+  // التأكد من وجود بيانات حساب Gmail
   // ----------------------------------------------------------
 
-  if (!env.RESEND_API_KEY) {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
 
     console.error(
-      "RESEND_API_KEY غير موجود في Secrets"
+      "GMAIL_USER أو GMAIL_APP_PASSWORD غير موجودين في Secrets"
     );
 
     return {
       ok: false,
       error:
-        "RESEND_API_KEY غير موجود بالسيرفر"
+        "بيانات حساب Gmail غير موجودة بالسيرفر"
     };
   }
+
+  const html = `
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>رمز تفعيل حسابك</title>
+</head>
+<body style="margin:0;padding:0;background:#f5f5f5;font-family:Arial,sans-serif;direction:rtl;">
+  <div style="max-width:600px;margin:40px auto;background:#ffffff;border-radius:16px;padding:30px;box-sizing:border-box;">
+    <h2 style="margin-top:0;color:#222222;">مرحبًا ${escapeHtml(fullName || "")}</h2>
+    <p style="font-size:16px;color:#444444;line-height:1.8;">
+      رمز تفعيل حسابك في تطبيق <strong>سجل</strong> هو:
+    </p>
+    <div style="margin:25px 0;padding:20px;background:#f1f1f1;border-radius:12px;text-align:center;">
+      <div style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#111111;">
+        ${code}
+      </div>
+    </div>
+    <p style="font-size:15px;color:#555555;line-height:1.8;">
+      هذا الرمز صالح لمدة <strong>${CODE_TTL_MINUTES} دقائق</strong>.
+    </p>
+    <p style="font-size:14px;color:#888888;line-height:1.8;">
+      إذا لم تطلب هذا الرمز، يمكنك تجاهل هذه الرسالة.
+    </p>
+    <hr style="border:0;border-top:1px solid #eeeeee;margin:25px 0;">
+    <p style="text-align:center;font-size:13px;color:#999999;margin-bottom:0;">
+      تطبيق سجل
+    </p>
+  </div>
+</body>
+</html>
+  `;
+
+  const text =
+    `مرحبًا ${fullName || ""}\n\n` +
+    `رمز تفعيل حسابك في سجل هو: ${code}\n\n` +
+    `الرمز صالح لمدة ${CODE_TTL_MINUTES} دقائق.\n\n` +
+    `إذا لم تطلب هذا الرمز، تجاهل هذه الرسالة.`;
+
+  let mailer;
 
   try {
 
     // --------------------------------------------------------
-    // إرسال الطلب إلى Resend
+    // الاتصال بـ Gmail عبر SMTP
     // --------------------------------------------------------
 
-    const response =
-      await fetch(
-        "https://api.resend.com/emails",
-        {
-          method: "POST",
+    mailer = await WorkerMailer.connect({
+      credentials: {
+        username: env.GMAIL_USER,
+        password: env.GMAIL_APP_PASSWORD
+      },
+      authType: "plain",
+      host: "smtp.gmail.com",
+      port: 587,
+      secure: false
+    });
 
-          headers: {
-            "Authorization":
-              `Bearer ${env.RESEND_API_KEY}`,
-
-            "Content-Type":
-              "application/json"
-          },
-
-          body: JSON.stringify({
-
-            from:
-              `${FROM_NAME} <onboarding@resend.dev>`,
-
-            to: [
-              toEmail
-            ],
-
-            subject:
-              "رمز تفعيل حسابك في سجل",
-
-            html: `
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-
-<head>
-  <meta charset="UTF-8">
-
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
-  >
-
-  <title>
-    رمز تفعيل حسابك
-  </title>
-</head>
-
-<body
-  style="
-    margin:0;
-    padding:0;
-    background:#f5f5f5;
-    font-family:Arial,sans-serif;
-    direction:rtl;
-  "
->
-
-  <div
-    style="
-      max-width:600px;
-      margin:40px auto;
-      background:#ffffff;
-      border-radius:16px;
-      padding:30px;
-      box-sizing:border-box;
-    "
-  >
-
-    <h2
-      style="
-        margin-top:0;
-        color:#222222;
-      "
-    >
-      مرحبًا ${escapeHtml(
-        fullName || ""
-      )}
-    </h2>
-
-    <p
-      style="
-        font-size:16px;
-        color:#444444;
-        line-height:1.8;
-      "
-    >
-      رمز تفعيل حسابك في تطبيق
-      <strong>سجل</strong>
-      هو:
-    </p>
-
-    <div
-      style="
-        margin:25px 0;
-        padding:20px;
-        background:#f1f1f1;
-        border-radius:12px;
-        text-align:center;
-      "
-    >
-
-      <div
-        style="
-          font-size:32px;
-          font-weight:bold;
-          letter-spacing:8px;
-          color:#111111;
-        "
-      >
-        ${code}
-      </div>
-
-    </div>
-
-    <p
-      style="
-        font-size:15px;
-        color:#555555;
-        line-height:1.8;
-      "
-    >
-      هذا الرمز صالح لمدة
-      <strong>
-        ${CODE_TTL_MINUTES} دقائق
-      </strong>.
-    </p>
-
-    <p
-      style="
-        font-size:14px;
-        color:#888888;
-        line-height:1.8;
-      "
-    >
-      إذا لم تطلب هذا الرمز،
-      يمكنك تجاهل هذه الرسالة.
-    </p>
-
-    <hr
-      style="
-        border:0;
-        border-top:1px solid #eeeeee;
-        margin:25px 0;
-      "
-    >
-
-    <p
-      style="
-        text-align:center;
-        font-size:13px;
-        color:#999999;
-        margin-bottom:0;
-      "
-    >
-      تطبيق سجل
-    </p>
-
-  </div>
-
-</body>
-
-</html>
-            `,
-
-            text:
-              `مرحبًا ${
-                fullName || ""
-              }\n\n` +
-
-              `رمز تفعيل حسابك في سجل هو: ${
-                code
-              }\n\n` +
-
-              `الرمز صالح لمدة ${
-                CODE_TTL_MINUTES
-              } دقائق.\n\n` +
-
-              `إذا لم تطلب هذا الرمز، تجاهل هذه الرسالة.`
-          })
-        }
-      );
-
-    // --------------------------------------------------------
-    // قراءة نتيجة Resend
-    // --------------------------------------------------------
-
-    const result =
-      await response.json();
-
-    // --------------------------------------------------------
-    // إذا Resend رفض الطلب
-    // --------------------------------------------------------
-
-    if (!response.ok) {
-
-      console.error(
-        "RESEND ERROR:",
-        response.status,
-        result
-      );
-
-      return {
-        ok: false,
-
-        error:
-          "Resend " +
-          response.status +
-          ": " +
-          (
-            result &&
-            result.message
-              ? result.message
-              : JSON.stringify(result)
-          )
-      };
-    }
-
-    // --------------------------------------------------------
-    // نجاح
-    // --------------------------------------------------------
+    await mailer.send({
+      from: {
+        name: FROM_NAME,
+        email: env.GMAIL_USER
+      },
+      to: toEmail,
+      subject: "رمز تفعيل حسابك في سجل",
+      html,
+      text
+    });
 
     console.log(
-      "Verification email sent:",
-      result
+      "Verification email sent via Gmail to:",
+      toEmail
     );
 
-    return {
-      ok: true
-    };
+    return { ok: true };
 
   } catch (err) {
 
     console.error(
-      "RESEND REQUEST FAILED:",
+      "GMAIL SEND FAILED:",
       err
     );
 
     return {
       ok: false,
-
       error:
         String(
-          err &&
-          err.message
+          err && err.message
             ? err.message
             : err
         )
     };
+
+  } finally {
+
+    if (mailer) {
+      try {
+        await mailer.close();
+      } catch (_) {}
+    }
   }
 }
 
