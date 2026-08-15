@@ -1407,6 +1407,139 @@ async function handleRequest(request, env) {
   }
 
   // ========================================================
+  // GET APP UPDATE
+  // عام - أي مستخدم يفحصه بدون تسجيل دخول
+  // ========================================================
+
+  if (
+    url.pathname === "/api/app-update" &&
+    request.method === "GET"
+  ) {
+
+    const row =
+      await env.DB
+        .prepare(
+          `SELECT
+             version_code,
+             version_name,
+             download_url,
+             notes
+           FROM app_update
+           WHERE id = 1`
+        )
+        .first();
+
+    if (!row) {
+      return json({
+        success: true,
+        version_code: 0,
+        version_name: "",
+        download_url: "",
+        notes: ""
+      });
+    }
+
+    return json({
+      success: true,
+      version_code: row.version_code,
+      version_name: row.version_name || "",
+      download_url: row.download_url || "",
+      notes: row.notes || ""
+    });
+  }
+
+  // ========================================================
+  // نشر تحديث جديد
+  // المالك (owner) فقط
+  // ========================================================
+
+  if (
+    url.pathname === "/api/app-update" &&
+    request.method === "POST"
+  ) {
+    const token = getToken(request);
+
+    if (!token) {
+      return json(
+        {
+          success: false,
+          message: "غير مسجل الدخول"
+        },
+        401
+      );
+    }
+
+    const access = await getAccess(env, token);
+
+    if (!access) {
+      return json(
+        {
+          success: false,
+          message: "الجلسة غير صالحة أو منتهية"
+        },
+        401
+      );
+    }
+
+    if (access.type !== "owner") {
+      return json(
+        {
+          success: false,
+          message: "غير مصرح، هذي الميزة للمالك فقط"
+        },
+        403
+      );
+    }
+
+    const data = await request.json();
+
+    const {
+      version_code,
+      version_name = "",
+      download_url,
+      notes = ""
+    } = data;
+
+    if (!version_code || !download_url) {
+      return json(
+        {
+          success: false,
+          message: "version_code و download_url مطلوبان"
+        },
+        400
+      );
+    }
+
+    const now = new Date().toISOString();
+
+    await env.DB
+      .prepare(
+        `INSERT INTO app_update
+         (id, version_code, version_name, download_url, notes, updated_at)
+         VALUES (1, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           version_code = excluded.version_code,
+           version_name = excluded.version_name,
+           download_url = excluded.download_url,
+           notes = excluded.notes,
+           updated_at = excluded.updated_at`
+      )
+      .bind(
+        Number(version_code),
+        version_name || "",
+        download_url,
+        notes || "",
+        now
+      )
+      .run();
+
+    return json({
+      success: true,
+      message: "تم نشر التحديث"
+    });
+  }
+
+  // ========================================================
   // Default
   // ========================================================
 
