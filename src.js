@@ -1482,7 +1482,8 @@ async function handleRequest(request, env) {
              version_code,
              version_name,
              download_url,
-             notes
+             notes,
+             force_update
            FROM app_update
            WHERE id = 1`
         )
@@ -1494,7 +1495,8 @@ async function handleRequest(request, env) {
         version_code: 0,
         version_name: "",
         download_url: "",
-        notes: ""
+        notes: "",
+        force_update: false
       });
     }
 
@@ -1503,7 +1505,8 @@ async function handleRequest(request, env) {
       version_code: row.version_code,
       version_name: row.version_name || "",
       download_url: row.download_url || "",
-      notes: row.notes || ""
+      notes: row.notes || "",
+      force_update: !!row.force_update
     });
   }
 
@@ -1556,7 +1559,8 @@ async function handleRequest(request, env) {
       version_code,
       version_name = "",
       download_url,
-      notes = ""
+      notes = "",
+      force_update = false
     } = data;
 
     if (!version_code || !download_url) {
@@ -1574,13 +1578,14 @@ async function handleRequest(request, env) {
     await env.DB
       .prepare(
         `INSERT INTO app_update
-         (id, version_code, version_name, download_url, notes, updated_at)
-         VALUES (1, ?, ?, ?, ?, ?)
+         (id, version_code, version_name, download_url, notes, force_update, updated_at)
+         VALUES (1, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            version_code = excluded.version_code,
            version_name = excluded.version_name,
            download_url = excluded.download_url,
            notes = excluded.notes,
+           force_update = excluded.force_update,
            updated_at = excluded.updated_at`
       )
       .bind(
@@ -1588,6 +1593,7 @@ async function handleRequest(request, env) {
         version_name || "",
         download_url,
         notes || "",
+        force_update ? 1 : 0,
         now
       )
       .run();
