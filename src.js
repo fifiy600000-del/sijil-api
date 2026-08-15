@@ -1904,4 +1904,4 @@ function escapeHtml(text) {
       /'/g,
       "&#039;"
     );
-}
+} 
