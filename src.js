@@ -1407,6 +1407,65 @@ async function handleRequest(request, env) {
   }
 
   // ========================================================
+  // عدد مستخدمين التطبيق
+  // المالك فقط - تستخدم بقائمة التحديث السرية
+  // ========================================================
+
+  if (
+    url.pathname === "/api/stats/users-count" &&
+    request.method === "GET"
+  ) {
+    const token = getToken(request);
+
+    if (!token) {
+      return json(
+        {
+          success: false,
+          message: "غير مسجل الدخول"
+        },
+        401
+      );
+    }
+
+    const access = await getAccess(env, token);
+
+    if (!access) {
+      return json(
+        {
+          success: false,
+          message: "الجلسة غير صالحة أو منتهية"
+        },
+        401
+      );
+    }
+
+    if (access.type !== "owner") {
+      return json(
+        {
+          success: false,
+          message: "غير مصرح"
+        },
+        403
+      );
+    }
+
+    const row = await env.DB
+      .prepare(
+        `SELECT
+           COUNT(*) AS total,
+           SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) AS verified
+         FROM users`
+      )
+      .first();
+
+    return json({
+      success: true,
+      total_users: row.total || 0,
+      verified_users: row.verified || 0
+    });
+  }
+
+  // ========================================================
   // GET APP UPDATE
   // عام - أي مستخدم يفحصه بدون تسجيل دخول
   // ========================================================
